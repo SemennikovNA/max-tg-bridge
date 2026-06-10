@@ -1,6 +1,18 @@
-session/session.json
-data/
+# secrets & state — НИКОГДА не коммитить
 .env
+.env.*
+!.env.example
+
+session/*
+!session/.gitkeep
+
+data/*
+!data/.gitkeep
+
+*.db
+*.sqlite
+
+# python
 __pycache__/
 *.pyc
 .venv/

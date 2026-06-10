@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import uuid
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
@@ -14,8 +15,9 @@ import config
 vc.USER_AGENT = config.WEB_USER_AGENT
 vc.APP_VERSION = config.WEB_APP_VERSION
 
-# vkmax логирует каждый запрос/ответ на INFO, включая auth-токен при логине
-logging.getLogger("vkmax.client").setLevel(logging.WARNING)
+# vkmax логирует каждый запрос/ответ на INFO, включая auth-токен при логине.
+# По умолчанию глушим до WARNING; для отладки: VKMAX_LOG=INFO
+logging.getLogger("vkmax.client").setLevel(os.getenv("VKMAX_LOG", "WARNING"))
 
 _logger = logging.getLogger(__name__)
 
@@ -56,9 +58,15 @@ class WebMaxClient(MaxClient):
             except json.JSONDecodeError:
                 continue
 
-            # резолвим future ТОЛЬКО на ответ (cmd==1) на наш запрос;
-            # server-push (cmd==0) с тем же seq не должен перехватывать future
-            if packet.get("cmd") == 1:
+            if os.getenv("DEBUG_PACKETS"):
+                _logger.warning("RAW <- cmd=%s seq=%s opcode=%s payload=%s",
+                                packet.get("cmd"), packet.get("seq"),
+                                packet.get("opcode"), packet.get("payload"))
+
+            # резолвим future на ЛЮБОЙ ответ на наш запрос (cmd != 0):
+            #   cmd==1 — успех, cmd==3 — ошибка.
+            # server-push (cmd==0) с тем же seq не должен перехватывать future.
+            if packet.get("cmd") != 0:
                 future = self._pending.pop(packet.get("seq"), None)
                 if future and not future.done():
                     future.set_result(packet)
@@ -106,6 +114,21 @@ class WebMaxClient(MaxClient):
                 await self._user_callback(client, packet)
 
         self.set_packet_callback(internal)
+
+    async def get_contacts(self, ids) -> list:
+        resp = await self.invoke_method(32, {"contactIds": [int(i) for i in ids]})
+        return resp.get("payload", {}).get("contacts", []) or []
+
+    async def get_history(self, chat_id: int, from_time: int, backward: int = 10) -> list:
+        resp = await self.invoke_method(49, {
+            "chatId": chat_id, "from": from_time,
+            "forward": 0, "backward": backward, "getMessages": True,
+        })
+        return resp.get("payload", {}).get("messages", []) or []
+
+    async def send_text(self, chat_id: int, text: str):
+        from vkmax.functions.messages import send_message
+        return await send_message(self, chat_id, text)
 
 
 def load_session(path: Path = config.SESSION_FILE) -> Optional[dict]:

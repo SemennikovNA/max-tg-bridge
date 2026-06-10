@@ -35,9 +35,12 @@ WEB_FINGERPRINT = {
 MAX_PHONE = os.getenv("MAX_PHONE", "")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_GROUP_ID = int(os.getenv("TELEGRAM_GROUP_ID", "0"))
+TELEGRAM_GROUP_ID = int(os.getenv("TELEGRAM_GROUP_ID") or "0")
 
-HUMAN_DELAY_MIN = float(os.getenv("HUMAN_DELAY_MIN", "1.0"))
-HUMAN_DELAY_MAX = float(os.getenv("HUMAN_DELAY_MAX", "5.0"))
-QUIET_HOURS_START = int(os.getenv("QUIET_HOURS_START", "1"))
-QUIET_HOURS_END = int(os.getenv("QUIET_HOURS_END", "8"))
+HUMAN_DELAY_MIN = float(os.getenv("HUMAN_DELAY_MIN") or "1.0")
+HUMAN_DELAY_MAX = float(os.getenv("HUMAN_DELAY_MAX") or "5.0")
+QUIET_HOURS_START = int(os.getenv("QUIET_HOURS_START") or "1")
+QUIET_HOURS_END = int(os.getenv("QUIET_HOURS_END") or "8")
+
+HISTORY_DEPTH = int(os.getenv("HISTORY_DEPTH") or "10")
+TOPIC_THROTTLE = float(os.getenv("TOPIC_THROTTLE") or "2.0")

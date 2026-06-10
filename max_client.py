@@ -130,6 +130,21 @@ class WebMaxClient(MaxClient):
         from vkmax.functions.messages import send_message
         return await send_message(self, chat_id, text)
 
+    async def cleanup_for_reconnect(self):
+        if self._keepalive_task:
+            self._keepalive_task.cancel()
+            self._keepalive_task = None
+        if self._connection:
+            try:
+                await self._connection.close()
+            except Exception:
+                pass
+            self._connection = None
+        for fut in list(self._pending.values()):
+            if not fut.done():
+                fut.cancel()
+        self._pending.clear()
+
 
 def load_session(path: Path = config.SESSION_FILE) -> Optional[dict]:
     if not path.exists():

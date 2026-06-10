@@ -44,3 +44,10 @@ QUIET_HOURS_END = int(os.getenv("QUIET_HOURS_END") or "8")
 
 HISTORY_DEPTH = int(os.getenv("HISTORY_DEPTH") or "10")
 TOPIC_THROTTLE = float(os.getenv("TOPIC_THROTTLE") or "2.0")
+
+IGNORED_CHAT_IDS = {
+    int(x) for x in (os.getenv("IGNORED_CHAT_IDS") or "0").split(",") if x.strip()
+}
+
+HEARTBEAT_FILE = DATA_DIR / "heartbeat"
+HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL") or "30")

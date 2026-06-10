@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import random
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -23,6 +24,8 @@ class Bridge:
         self.group_id = config.TELEGRAM_GROUP_ID
         self.me_id = None
         self.tz = ZoneInfo(config.WEB_TIMEZONE)
+        self._reconnecting = False
+        self._hb_task = None
         self._register_handlers()
 
     # ---------- names ----------
@@ -61,23 +64,65 @@ class Bridge:
             return await self.resolve_name(others[0])
         return f"Чат {chat.get('id')}"
 
-    # ---------- MAX -> Telegram ----------
+    # ---------- MAX session ----------
 
     async def start_max(self):
         session = load_session()
         if not session:
-            raise RuntimeError("No session. Run login.py / provide session.json first.")
+            raise RuntimeError("No session. Provide session.json first.")
         self.max = WebMaxClient(device_id=session["device_id"])
         await self.max.connect()
         resp = await self.max.login_by_token(session["auth_token"], session["device_id"])
         payload = resp["payload"]
         self.me_id = payload["profile"]["contact"]["id"]
         _logger.info("MAX logged in, me_id=%s", self.me_id)
+        await self.cleanup_ignored()
         await self.init_topics(payload.get("chats", []))
+        self.max.set_reconnect_callback(self._reconnect)
         self.max.on_packet(self.on_max_packet)
 
+    async def _reconnect(self):
+        if self._reconnecting:
+            return
+        self._reconnecting = True
+        backoff = 1
+        try:
+            while True:
+                await self.max.cleanup_for_reconnect()
+                try:
+                    session = load_session()
+                    await self.max.connect()
+                    await self.max.login_by_token(
+                        session["auth_token"], session["device_id"])
+                    self.max.on_packet(self.on_max_packet)
+                    _logger.info("MAX reconnected")
+                    return
+                except Exception as err:
+                    _logger.warning("MAX reconnect failed: %s; retry in %ss",
+                                    err, backoff)
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 60)
+        finally:
+            self._reconnecting = False
+
+    # ---------- topics ----------
+
+    async def cleanup_ignored(self):
+        for chat_id in config.IGNORED_CHAT_IDS:
+            topic_id = self.store.get_topic(chat_id)
+            if topic_id is None:
+                continue
+            try:
+                await self.bot.delete_forum_topic(self.group_id, topic_id)
+            except Exception as err:
+                _logger.warning("delete ignored topic %s failed: %s", topic_id, err)
+            self.store.del_topic(chat_id)
+            _logger.info("removed ignored chat %s (topic %s)", chat_id, topic_id)
+
     async def init_topics(self, chats: list):
-        new = [c for c in chats if self.store.get_topic(c["id"]) is None]
+        new = [c for c in chats
+               if c["id"] not in config.IGNORED_CHAT_IDS
+               and self.store.get_topic(c["id"]) is None]
         _logger.info("init_topics: %s chats, %s new", len(chats), len(new))
         for chat in new:
             chat_id = chat["id"]
@@ -116,6 +161,8 @@ class Bridge:
             await self.deliver_to_tg(topic_id, m, history=True)
             await asyncio.sleep(0.4)
 
+    # ---------- MAX -> Telegram ----------
+
     async def on_max_packet(self, client, packet: dict):
         if packet.get("opcode") != 128 or packet.get("cmd") != 0:
             return
@@ -123,11 +170,13 @@ class Bridge:
         msg = payload.get("message")
         if not msg:
             return
+        chat_id = payload.get("chatId")
+        if chat_id in config.IGNORED_CHAT_IDS:
+            return
         msg_id = msg.get("id")
         if self.store.is_seen(msg_id):
             return
         self.store.mark_seen(msg_id)
-        chat_id = payload.get("chatId")
         sender = msg.get("sender")
         name = await self.resolve_name(sender) if sender != self.me_id else "Я"
         topic_id = await self.ensure_topic(chat_id, name)
@@ -182,9 +231,39 @@ class Bridge:
             _logger.warning("max send to %s failed: %s", chat_id, err)
             await message.reply(f"⚠️ Не отправлено в MAX: {err}")
 
-    # ---------- run ----------
+    # ---------- lifecycle ----------
+
+    async def _heartbeat_loop(self):
+        while True:
+            try:
+                config.HEARTBEAT_FILE.write_text(str(int(time.time())))
+            except Exception:
+                pass
+            await asyncio.sleep(config.HEARTBEAT_INTERVAL)
+
+    async def shutdown(self):
+        _logger.info("Shutting down...")
+        if self._hb_task:
+            self._hb_task.cancel()
+        try:
+            if self.max:
+                await self.max.disconnect()
+        except Exception:
+            pass
+        try:
+            await self.bot.session.close()
+        except Exception:
+            pass
+        try:
+            self.store.db.close()
+        except Exception:
+            pass
 
     async def run(self):
         await self.start_max()
+        self._hb_task = asyncio.create_task(self._heartbeat_loop())
         _logger.info("Bridge started; polling Telegram")
-        await self.dp.start_polling(self.bot)
+        try:
+            await self.dp.start_polling(self.bot)
+        finally:
+            await self.shutdown()

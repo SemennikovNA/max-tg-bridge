@@ -37,6 +37,10 @@ class Storage:
             (chat_id, topic_id))
         self.db.commit()
 
+    def del_topic(self, chat_id: int):
+        self.db.execute("DELETE FROM topics WHERE chat_id=?", (chat_id,))
+        self.db.commit()
+
     def chat_for_topic(self, topic_id: int):
         row = self.db.execute(
             "SELECT chat_id FROM topics WHERE topic_id=?", (topic_id,)).fetchone()

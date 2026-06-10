@@ -1,0 +1,11 @@
+services:
+  bridge:
+    build: .
+    container_name: max-tg-bridge
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: ${TZ:-Europe/Moscow}
+    volumes:
+      - ${SESSION_HOST_DIR:-./session}:/app/session
+      - ${DATA_HOST_DIR:-./data}:/app/data

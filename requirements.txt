@@ -1,0 +1,2 @@
+vkmax @ git+https://github.com/nsdkinx/vkmax.git@c67a5097ac3e565dfb5d2448f9b17aff7f92a596
+aiogram>=3.0

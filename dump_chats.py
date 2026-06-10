@@ -23,6 +23,11 @@ async def main():
 
     chats = payload.get("chats") or []
     print("=== chats count ===", len(chats))
+    print("=== ALL chats (id/type/title/parts) ===")
+    for c in chats:
+        print(f"  id={c.get('id')} type={c.get('type')} "
+              f"title={c.get('title')!r} parts={len(c.get('participants', {}))} "
+              f"keys={list(c.keys())}")
     if chats:
         print("=== chat[0] SCHEMA (no values) ===")
         print(json.dumps(schema(chats[0]), ensure_ascii=False, indent=1))
@@ -33,6 +38,21 @@ async def main():
         print("  id:", c0.get("id"), "type:", c0.get("type"),
               "has_title:", bool(c0.get("title")),
               "title_len:", len(c0.get("title") or ""))
+
+    print("=== повторный ChatSync (opcode 19) без token ===")
+    try:
+        r = await client.invoke_method(19, {
+            "interactive": False, "chatsCount": 100,
+            "chatsSync": 0, "contactsSync": 0, "presenceSync": -1, "draftsSync": 0,
+        })
+        rc = r.get("payload", {}).get("chats", [])
+        if "error" in r.get("payload", {}):
+            print("  ERROR:", r["payload"]["error"])
+        else:
+            print("  chats returned:", len(rc),
+                  "| titles:", [c.get("title") for c in rc if c.get("title")])
+    except Exception as e:
+        print("  exception:", e)
 
     contacts = payload.get("contacts") or []
     print("=== contacts count ===", len(contacts))

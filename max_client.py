@@ -130,6 +130,13 @@ class WebMaxClient(MaxClient):
         from vkmax.functions.messages import send_message
         return await send_message(self, chat_id, text)
 
+    async def get_chats(self, token: str, count: int = 100) -> list:
+        resp = await self.invoke_method(19, {
+            "interactive": False, "token": token, "chatsCount": count,
+            "chatsSync": 0, "contactsSync": 0, "presenceSync": -1, "draftsSync": 0,
+        })
+        return resp.get("payload", {}).get("chats", []) or []
+
     async def cleanup_for_reconnect(self):
         if self._keepalive_task:
             self._keepalive_task.cancel()

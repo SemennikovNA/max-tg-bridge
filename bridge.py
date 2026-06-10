@@ -26,6 +26,8 @@ class Bridge:
         self.tz = ZoneInfo(config.WEB_TIMEZONE)
         self._reconnecting = False
         self._hb_task = None
+        self.session = None
+        self.chats_meta = {}
         self._register_handlers()
 
     # ---------- names ----------
@@ -64,22 +66,60 @@ class Bridge:
             return await self.resolve_name(others[0])
         return f"Чат {chat.get('id')}"
 
+    async def get_chat_meta(self, chat_id: int):
+        meta = self.chats_meta.get(chat_id)
+        if meta:
+            return meta
+        try:
+            chats = await asyncio.wait_for(
+                self.max.get_chats(self.session["auth_token"]), timeout=10)
+            self.chats_meta = {c["id"]: c for c in chats}
+        except Exception as err:
+            _logger.warning("get_chats refresh failed: %s", err)
+        return self.chats_meta.get(chat_id)
+
+    async def chat_name_for(self, chat_id: int, fallback: str) -> str:
+        meta = await self.get_chat_meta(chat_id)
+        if meta:
+            return await self.chat_display_name(meta)
+        return fallback
+
     # ---------- MAX session ----------
 
     async def start_max(self):
-        session = load_session()
-        if not session:
+        self.session = load_session()
+        if not self.session:
             raise RuntimeError("No session. Provide session.json first.")
-        self.max = WebMaxClient(device_id=session["device_id"])
+        self.max = WebMaxClient(device_id=self.session["device_id"])
         await self.max.connect()
-        resp = await self.max.login_by_token(session["auth_token"], session["device_id"])
+        resp = await self.max.login_by_token(
+            self.session["auth_token"], self.session["device_id"])
         payload = resp["payload"]
         self.me_id = payload["profile"]["contact"]["id"]
         _logger.info("MAX logged in, me_id=%s", self.me_id)
+        chats = payload.get("chats", [])
+        self.chats_meta = {c["id"]: c for c in chats}
         await self.cleanup_ignored()
-        await self.init_topics(payload.get("chats", []))
+        await self.init_topics(chats)
+        await self.refresh_topic_names()
         self.max.set_reconnect_callback(self._reconnect)
         self.max.on_packet(self.on_max_packet)
+
+    async def refresh_topic_names(self):
+        for chat_id, meta in self.chats_meta.items():
+            if chat_id in config.IGNORED_CHAT_IDS or meta.get("type") == "DIALOG":
+                continue
+            topic_id = self.store.get_topic(chat_id)
+            if topic_id is None:
+                continue
+            try:
+                name = await self.chat_display_name(meta)
+                await self.bot.edit_forum_topic(
+                    self.group_id, topic_id, name=name[:128])
+                _logger.info("renamed topic %s -> %s", topic_id, name)
+            except Exception as err:
+                _logger.warning("rename topic %s failed: %s", topic_id, err)
+            await asyncio.sleep(0.5)
 
     async def _reconnect(self):
         if self._reconnecting:
@@ -144,7 +184,8 @@ class Bridge:
         topic_id = self.store.get_topic(chat_id)
         if topic_id is not None:
             return topic_id
-        topic_id = await self.create_topic(fallback_name)
+        name = await self.chat_name_for(chat_id, fallback_name)
+        topic_id = await self.create_topic(name)
         self.store.set_topic(chat_id, topic_id)
         return topic_id
 

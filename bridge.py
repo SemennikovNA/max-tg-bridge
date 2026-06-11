@@ -4,7 +4,8 @@ import random
 import time
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, MessageReactionUpdated, BufferedInputFile
+from aiogram.types import (Message, MessageReactionUpdated, BufferedInputFile,
+                           InputMediaPhoto, InputMediaVideo)
 
 import config
 from max_client import WebMaxClient, load_session
@@ -259,17 +260,61 @@ class Bridge:
                 _logger.warning("tg send to topic %s failed: %s", topic_id, err)
             return
 
-        first = True
-        for a in attaches:
-            cap = caption if first else None
+        # альбом-группируемые: PHOTO и обычное VIDEO (не кружок)
+        albumable = [a for a in attaches
+                     if a.get("_type") == "PHOTO"
+                     or (a.get("_type") == "VIDEO" and a.get("videoType") != 1)]
+        sent_first = None
+        used_caption = False
+
+        if len(albumable) >= 2:
+            media = []
+            for i, a in enumerate(albumable):
+                try:
+                    data = await self._attach_bytes(a, chat_id, msg.get("id"))
+                    cap = caption if i == 0 else None
+                    if a.get("_type") == "PHOTO":
+                        media.append(InputMediaPhoto(
+                            media=BufferedInputFile(data, "p.jpg"), caption=cap))
+                    else:
+                        media.append(InputMediaVideo(
+                            media=BufferedInputFile(data, "v.mp4"), caption=cap))
+                except Exception as err:
+                    _logger.warning("album item failed: %s", err)
+            if media:
+                try:
+                    sent = await self.bot.send_media_group(
+                        self.group_id, media, message_thread_id=topic_id)
+                    sent_first = sent[0] if sent else None
+                    used_caption = True
+                except Exception as err:
+                    _logger.warning("send_media_group failed: %s", err)
+            rest = [a for a in attaches if a not in albumable]
+        else:
+            rest = attaches
+
+        first = sent_first is None
+        for a in rest:
+            cap = caption if (first and not used_caption) else None
             sent = await self.deliver_attach(topic_id, chat_id, msg.get("id"), a, cap)
             if first and sent:
-                self._map(sent, chat_id, msg.get("id"))
+                sent_first = sent
             first = False
+
+        self._map(sent_first, chat_id, msg.get("id"))
 
     def _map(self, sent, chat_id, max_msg_id):
         if sent and chat_id is not None and max_msg_id:
             self.store.set_msg_map(sent.message_id, chat_id, max_msg_id)
+
+    async def _attach_bytes(self, a, chat_id, msg_id):
+        t = a.get("_type")
+        if t == "PHOTO":
+            return await self.max.download_bytes(a["baseUrl"])
+        if t == "VIDEO":
+            url = await self.max.get_video_url(chat_id, msg_id, a["videoId"])
+            return await self.max.download_bytes(url)
+        raise RuntimeError(f"no bytes for {t}")
 
     async def deliver_attach(self, topic_id, chat_id, msg_id, a, caption):
         t = a.get("_type")

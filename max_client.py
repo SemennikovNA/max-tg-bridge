@@ -178,12 +178,29 @@ class WebMaxClient(MaxClient):
         resp = await self.invoke_method(83, {
             "videoId": video_id, "chatId": chat_id, "messageId": str(message_id),
         })
-        formats = dict(resp.get("payload", {}))
-        formats.pop("cache", None)
-        formats.pop("EXTERNAL", None)
-        for v in formats.values():
-            if isinstance(v, str) and v.startswith("http"):
-                return v
+        payload = resp.get("payload", {})
+        _logger.warning("video83 keys=%s cache=%s",
+                        list(payload.keys()), type(payload.get("cache")).__name__)
+        skip = {"EXTERNAL", "thumbnail", "preview", "previewData"}
+
+        def collect(o):
+            urls = []
+            if isinstance(o, str):
+                if o.startswith("http"):
+                    urls.append(o)
+            elif isinstance(o, dict):
+                for k, v in o.items():
+                    if k in skip:
+                        continue
+                    urls += collect(v)
+            elif isinstance(o, list):
+                for v in o:
+                    urls += collect(v)
+            return urls
+
+        urls = collect(payload)
+        if urls:
+            return urls[0]
         raise RuntimeError("no video url in response")
 
     async def get_file_url(self, chat_id: int, message_id, file_id: int) -> str:

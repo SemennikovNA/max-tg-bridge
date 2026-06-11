@@ -464,17 +464,23 @@ class Bridge:
         mapping = self.store.get_max_msg(event.message_id)
         if not mapping:
             return
-        chat_id, max_msg_id = mapping
         emoji = None
         for r in (event.new_reaction or []):
             if getattr(r, "type", None) == "emoji":
                 emoji = r.emoji
                 break
+        chat_id, max_msg_id = mapping
         try:
             if emoji:
-                await self.max.set_reaction(chat_id, max_msg_id, emoji)
+                res = await self.max.set_reaction(chat_id, max_msg_id, emoji)
+                # MAX не знает эмодзи без/с variation selector -> пробуем toggle FE0F
+                if isinstance(res, dict) and res.get("cmd") == 3:
+                    alt = (emoji.replace("️", "") if "️" in emoji
+                           else emoji + "️")
+                    res = await self.max.set_reaction(chat_id, max_msg_id, alt)
+                    if isinstance(res, dict) and res.get("cmd") == 3:
+                        _logger.warning("reaction %r not supported by MAX", emoji)
             else:
-                # пустая new_reaction => реакция снята
                 await self.max.remove_reaction(chat_id, max_msg_id)
         except Exception as err:
             _logger.warning("reaction sync failed: %s", err)

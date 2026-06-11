@@ -177,7 +177,10 @@ class WebMaxClient(MaxClient):
             "Sec-Fetch-Site": "cross-site",
         }
         async with self._http_pool.get(url, headers=headers) as resp:
-            resp.raise_for_status()
+            if resp.status >= 400:
+                body = (await resp.text())[:400]
+                raise RuntimeError(f"HTTP {resp.status} body={body!r} "
+                                   f"ctype={resp.headers.get('Content-Type')}")
             return await resp.read()
 
     async def get_video_url(self, chat_id: int, message_id, video_id: int) -> str:
@@ -185,8 +188,6 @@ class WebMaxClient(MaxClient):
             "videoId": video_id, "chatId": chat_id, "messageId": str(message_id),
         })
         payload = resp.get("payload", {})
-        _logger.warning("video83 keys=%s cache=%s",
-                        list(payload.keys()), type(payload.get("cache")).__name__)
         skip = {"EXTERNAL", "thumbnail", "preview", "previewData"}
 
         def collect(o):

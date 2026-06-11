@@ -82,6 +82,12 @@ class Bridge:
             return await self.chat_display_name(meta)
         return fallback
 
+    def is_group_chat(self, chat_id) -> bool:
+        meta = self.chats_meta.get(chat_id)
+        if meta:
+            return meta.get("type") != "DIALOG"
+        return (chat_id or 0) < 0
+
     # ---------- MAX session ----------
 
     async def start_max(self):
@@ -231,17 +237,22 @@ class Bridge:
     async def deliver_to_tg(self, topic_id: int, msg: dict,
                             chat_id: int = None, history: bool = False):
         sender = msg.get("sender")
-        sender_name = "Я" if sender == self.me_id else await self.resolve_name(sender)
         text = (msg.get("text") or "").strip()
         attaches = msg.get("attaches") or []
         prefix = "🕓 " if history else ""
-        caption = f"{prefix}{sender_name}: {text}".rstrip()
+        if sender == self.me_id:
+            label = "Я: "
+        elif self.is_group_chat(chat_id):
+            label = f"{await self.resolve_name(sender)}: "
+        else:
+            label = ""
+        caption = f"{prefix}{label}{text}".rstrip()
 
         if not attaches:
+            out = caption if text else (f"{prefix}{label}[пусто]".rstrip() or "[пусто]")
             try:
                 sent = await self.bot.send_message(
-                    self.group_id, caption if text else f"{prefix}{sender_name}: [пусто]",
-                    message_thread_id=topic_id)
+                    self.group_id, out, message_thread_id=topic_id)
                 self._map(sent, chat_id, msg.get("id"))
             except Exception as err:
                 _logger.warning("tg send to topic %s failed: %s", topic_id, err)
@@ -269,8 +280,19 @@ class Bridge:
                     g, BufferedInputFile(data, "photo.jpg"),
                     caption=caption, message_thread_id=topic_id)
             if t == "VIDEO":
-                url = await self.max.get_video_url(chat_id, msg_id, a["videoId"])
-                data = await self.max.download_bytes(url)
+                try:
+                    url = await self.max.get_video_url(chat_id, msg_id, a["videoId"])
+                    data = await self.max.download_bytes(url)
+                except Exception as err:
+                    _logger.warning("video download failed (%s); fallback to preview", err)
+                    thumb = a.get("thumbnail")
+                    if thumb:
+                        tdata = await self.max.download_bytes(thumb)
+                        cap = ((caption or "") + "\n🎥 видео").strip()
+                        return await self.bot.send_photo(
+                            g, BufferedInputFile(tdata, "video_preview.jpg"),
+                            caption=cap, message_thread_id=topic_id)
+                    raise
                 if a.get("videoType") == 1:
                     sent = await self.bot.send_video_note(
                         g, BufferedInputFile(data, "round.mp4"),

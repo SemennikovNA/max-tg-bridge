@@ -161,6 +161,8 @@ class WebMaxClient(MaxClient):
 
     async def download_bytes(self, url: str) -> bytes:
         import aiohttp
+        import html
+        url = html.unescape(url)
         if not self._http_pool:
             self._http_pool = aiohttp.ClientSession()
         headers = {
@@ -173,8 +175,16 @@ class WebMaxClient(MaxClient):
             return await resp.read()
 
     async def get_video_url(self, chat_id: int, message_id, video_id: int) -> str:
-        from vkmax.functions.uploads import download_video
-        return await download_video(self, chat_id, str(message_id), video_id)
+        resp = await self.invoke_method(83, {
+            "videoId": video_id, "chatId": chat_id, "messageId": str(message_id),
+        })
+        formats = dict(resp.get("payload", {}))
+        formats.pop("cache", None)
+        formats.pop("EXTERNAL", None)
+        for v in formats.values():
+            if isinstance(v, str) and v.startswith("http"):
+                return v
+        raise RuntimeError("no video url in response")
 
     async def get_file_url(self, chat_id: int, message_id, file_id: int) -> str:
         from vkmax.functions.uploads import download_file

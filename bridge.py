@@ -343,6 +343,31 @@ class Bridge:
         async def _on_tg(message: Message):
             await self.on_tg_reply(message)
 
+        @self.dp.message(F.chat.id == self.group_id, F.message_thread_id.is_not(None),
+                         F.photo)
+        async def _ph(message: Message):
+            await self.on_tg_media(message, "photo")
+
+        @self.dp.message(F.chat.id == self.group_id, F.message_thread_id.is_not(None),
+                         F.video)
+        async def _vd(message: Message):
+            await self.on_tg_media(message, "video")
+
+        @self.dp.message(F.chat.id == self.group_id, F.message_thread_id.is_not(None),
+                         F.voice)
+        async def _vo(message: Message):
+            await self.on_tg_media(message, "voice")
+
+        @self.dp.message(F.chat.id == self.group_id, F.message_thread_id.is_not(None),
+                         F.video_note)
+        async def _vn(message: Message):
+            await self.on_tg_media(message, "video_note")
+
+        @self.dp.message(F.chat.id == self.group_id, F.message_thread_id.is_not(None),
+                         F.document)
+        async def _doc(message: Message):
+            await self.on_tg_media(message, "document")
+
         @self.dp.edited_message(
             F.chat.id == self.group_id,
             F.message_thread_id.is_not(None),
@@ -413,6 +438,43 @@ class Bridge:
                 await self.max.mark_read(chat_id, last[0], last[1])
             except Exception as err:
                 _logger.warning("mark_read (reply) failed: %s", err)
+
+    async def on_tg_media(self, message: Message, kind: str):
+        if message.from_user and message.from_user.is_bot:
+            return
+        chat_id = self.store.chat_for_topic(message.message_thread_id)
+        if chat_id is None:
+            return
+        await asyncio.sleep(random.uniform(config.HUMAN_DELAY_MIN, config.HUMAN_DELAY_MAX))
+        from vkmax.functions.uploads import upload_photo, upload_video, upload_file
+        from vkmax.functions.messages import send_message
+        caption = message.caption or ""
+        try:
+            if kind == "photo":
+                buf = await self.bot.download(message.photo[-1].file_id)
+                attach = await upload_photo(self.max, chat_id, buf)
+            elif kind == "video":
+                buf = await self.bot.download(message.video.file_id)
+                attach = await upload_video(self.max, chat_id, buf)
+            elif kind == "video_note":
+                buf = await self.bot.download(message.video_note.file_id)
+                attach = await upload_video(self.max, chat_id, buf)
+            elif kind == "voice":
+                buf = await self.bot.download(message.voice.file_id)
+                attach = await upload_file(self.max, chat_id, buf, "voice.ogg")
+            elif kind == "document":
+                buf = await self.bot.download(message.document.file_id)
+                attach = await upload_file(
+                    self.max, chat_id, buf, message.document.file_name or "file.bin")
+            else:
+                return
+            result = await send_message(self.max, chat_id, caption, attaches=[attach])
+            max_id = (result or {}).get("payload", {}).get("message", {}).get("id")
+            if max_id:
+                self.store.set_msg_map(message.message_id, chat_id, max_id)
+        except Exception as err:
+            _logger.warning("tg->max media %s failed: %s", kind, err)
+            await message.reply(f"⚠️ Медиа не отправлено в MAX: {err}")
 
     # ---------- lifecycle ----------
 

@@ -461,8 +461,9 @@ class Bridge:
                 attach = await upload_video(self.max, chat_id, buf)
                 attach["videoType"] = 1  # пометить как кружок (видеосообщение)
             elif kind == "voice":
-                buf = await self.bot.download(message.voice.file_id)
-                attach = await upload_file(self.max, chat_id, buf, "voice.ogg")
+                await message.reply(
+                    "🎤 Голосовые MAX (web) не поддерживает — не отправлено.")
+                return
             elif kind == "document":
                 buf = await self.bot.download(message.document.file_id)
                 attach = await upload_file(

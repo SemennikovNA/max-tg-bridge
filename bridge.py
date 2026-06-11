@@ -459,6 +459,7 @@ class Bridge:
             elif kind == "video_note":
                 buf = await self.bot.download(message.video_note.file_id)
                 attach = await upload_video(self.max, chat_id, buf)
+                attach["videoType"] = 1  # пометить как кружок (видеосообщение)
             elif kind == "voice":
                 buf = await self.bot.download(message.voice.file_id)
                 attach = await upload_file(self.max, chat_id, buf, "voice.ogg")

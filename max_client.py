@@ -167,8 +167,14 @@ class WebMaxClient(MaxClient):
             self._http_pool = aiohttp.ClientSession()
         headers = {
             "User-Agent": config.WEB_USER_AGENT,
+            "Accept": "*/*",
+            "Accept-Language": "ru-RU,ru;q=0.9",
             "Origin": "https://web.max.ru",
             "Referer": "https://web.max.ru/",
+            "Range": "bytes=0-",
+            "Sec-Fetch-Dest": "video",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "cross-site",
         }
         async with self._http_pool.get(url, headers=headers) as resp:
             resp.raise_for_status()

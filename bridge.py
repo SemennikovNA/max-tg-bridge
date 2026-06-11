@@ -2,11 +2,9 @@ import asyncio
 import logging
 import random
 import time
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message
+from aiogram.types import Message, MessageReactionUpdated
 
 import config
 from max_client import WebMaxClient, load_session
@@ -23,11 +21,11 @@ class Bridge:
         self.dp = Dispatcher()
         self.group_id = config.TELEGRAM_GROUP_ID
         self.me_id = None
-        self.tz = ZoneInfo(config.WEB_TIMEZONE)
         self._reconnecting = False
         self._hb_task = None
         self.session = None
         self.chats_meta = {}
+        self.last_incoming = {}
         self._register_handlers()
 
     # ---------- names ----------
@@ -199,7 +197,7 @@ class Bridge:
             return
         for m in msgs:
             self.store.mark_seen(m.get("id"))
-            await self.deliver_to_tg(topic_id, m, history=True)
+            await self.deliver_to_tg(topic_id, m, chat_id=chat_id, history=True)
             await asyncio.sleep(0.4)
 
     # ---------- MAX -> Telegram ----------
@@ -221,9 +219,17 @@ class Bridge:
         sender = msg.get("sender")
         name = await self.resolve_name(sender) if sender != self.me_id else "Я"
         topic_id = await self.ensure_topic(chat_id, name)
-        await self.deliver_to_tg(topic_id, msg)
+        await self.deliver_to_tg(topic_id, msg, chat_id=chat_id)
+        # A: входящее доставлено в Telegram -> помечаем прочитанным в MAX
+        if sender != self.me_id:
+            self.last_incoming[chat_id] = (msg_id, msg.get("time"))
+            try:
+                await self.max.mark_read(chat_id, msg_id, msg.get("time"))
+            except Exception as err:
+                _logger.warning("mark_read (deliver) failed: %s", err)
 
-    async def deliver_to_tg(self, topic_id: int, msg: dict, history: bool = False):
+    async def deliver_to_tg(self, topic_id: int, msg: dict,
+                            chat_id: int = None, history: bool = False):
         sender = msg.get("sender")
         sender_name = "Я" if sender == self.me_id else await self.resolve_name(sender)
         text = (msg.get("text") or "").strip()
@@ -236,7 +242,10 @@ class Bridge:
         prefix = "🕓 " if history else ""
         out = f"{prefix}{sender_name}: {text}"
         try:
-            await self.bot.send_message(self.group_id, out, message_thread_id=topic_id)
+            sent = await self.bot.send_message(
+                self.group_id, out, message_thread_id=topic_id)
+            if chat_id is not None and msg.get("id"):
+                self.store.set_msg_map(sent.message_id, chat_id, msg["id"])
         except Exception as err:
             _logger.warning("tg send to topic %s failed: %s", topic_id, err)
 
@@ -251,10 +260,28 @@ class Bridge:
         async def _on_tg(message: Message):
             await self.on_tg_reply(message)
 
-    def in_quiet_hours(self) -> bool:
-        h = datetime.now(self.tz).hour
-        a, b = config.QUIET_HOURS_START, config.QUIET_HOURS_END
-        return (a <= h < b) if a <= b else (h >= a or h < b)
+        @self.dp.message_reaction(F.chat.id == self.group_id)
+        async def _on_reaction(event: MessageReactionUpdated):
+            await self.on_tg_reaction(event)
+
+    async def on_tg_reaction(self, event: MessageReactionUpdated):
+        mapping = self.store.get_max_msg(event.message_id)
+        if not mapping:
+            return
+        chat_id, max_msg_id = mapping
+        emoji = None
+        for r in (event.new_reaction or []):
+            if getattr(r, "type", None) == "emoji":
+                emoji = r.emoji
+                break
+        try:
+            if emoji:
+                await self.max.set_reaction(chat_id, max_msg_id, emoji)
+            else:
+                # пустая new_reaction => реакция снята
+                await self.max.remove_reaction(chat_id, max_msg_id)
+        except Exception as err:
+            _logger.warning("reaction sync failed: %s", err)
 
     async def on_tg_reply(self, message: Message):
         if message.from_user and message.from_user.is_bot:
@@ -262,15 +289,20 @@ class Bridge:
         chat_id = self.store.chat_for_topic(message.message_thread_id)
         if chat_id is None:
             return
-        if self.in_quiet_hours():
-            await message.reply("🌙 Тихие часы — в MAX не отправлено.")
-            return
         await asyncio.sleep(random.uniform(config.HUMAN_DELAY_MIN, config.HUMAN_DELAY_MAX))
         try:
             await self.max.send_text(chat_id, message.text)
         except Exception as err:
             _logger.warning("max send to %s failed: %s", chat_id, err)
             await message.reply(f"⚠️ Не отправлено в MAX: {err}")
+            return
+        # B: ответил -> помечаем последнее входящее прочитанным в MAX
+        last = self.last_incoming.get(chat_id)
+        if last:
+            try:
+                await self.max.mark_read(chat_id, last[0], last[1])
+            except Exception as err:
+                _logger.warning("mark_read (reply) failed: %s", err)
 
     # ---------- lifecycle ----------
 
@@ -305,6 +337,9 @@ class Bridge:
         self._hb_task = asyncio.create_task(self._heartbeat_loop())
         _logger.info("Bridge started; polling Telegram")
         try:
-            await self.dp.start_polling(self.bot)
+            await self.dp.start_polling(
+                self.bot,
+                allowed_updates=self.dp.resolve_used_update_types(),
+            )
         finally:
             await self.shutdown()

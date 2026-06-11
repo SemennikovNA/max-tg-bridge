@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
@@ -129,6 +130,27 @@ class WebMaxClient(MaxClient):
     async def send_text(self, chat_id: int, text: str):
         from vkmax.functions.messages import send_message
         return await send_message(self, chat_id, text)
+
+    async def mark_read(self, chat_id: int, message_id, mark=None):
+        return await self.invoke_method(50, {
+            "type": "READ_MESSAGE",
+            "chatId": chat_id,
+            "messageId": str(message_id),
+            "mark": int(mark or time.time() * 1000),
+        })
+
+    async def set_reaction(self, chat_id: int, message_id, emoji: str):
+        return await self.invoke_method(178, {
+            "chatId": chat_id,
+            "messageId": str(message_id),
+            "reaction": {"reactionType": "EMOJI", "id": emoji},
+        })
+
+    async def remove_reaction(self, chat_id: int, message_id):
+        return await self.invoke_method(179, {
+            "chatId": chat_id,
+            "messageId": str(message_id),
+        })
 
     async def get_chats(self, token: str, count: int = 100) -> list:
         resp = await self.invoke_method(19, {

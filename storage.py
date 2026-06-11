@@ -22,9 +22,26 @@ class Storage:
                 user_id INTEGER PRIMARY KEY,
                 name    TEXT
             );
+            CREATE TABLE IF NOT EXISTS msg_map (
+                tg_msg_id  INTEGER PRIMARY KEY,
+                chat_id    INTEGER,
+                max_msg_id TEXT
+            );
             """
         )
         self.db.commit()
+
+    def set_msg_map(self, tg_msg_id: int, chat_id: int, max_msg_id: str):
+        self.db.execute(
+            "INSERT OR REPLACE INTO msg_map (tg_msg_id, chat_id, max_msg_id) "
+            "VALUES (?, ?, ?)", (tg_msg_id, chat_id, str(max_msg_id)))
+        self.db.commit()
+
+    def get_max_msg(self, tg_msg_id: int):
+        row = self.db.execute(
+            "SELECT chat_id, max_msg_id FROM msg_map WHERE tg_msg_id=?",
+            (tg_msg_id,)).fetchone()
+        return (row[0], row[1]) if row else None
 
     def get_topic(self, chat_id: int):
         row = self.db.execute(

@@ -4,7 +4,7 @@ import random
 import time
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, MessageReactionUpdated
+from aiogram.types import Message, MessageReactionUpdated, BufferedInputFile
 
 import config
 from max_client import WebMaxClient, load_session
@@ -234,20 +234,81 @@ class Bridge:
         sender_name = "Я" if sender == self.me_id else await self.resolve_name(sender)
         text = (msg.get("text") or "").strip()
         attaches = msg.get("attaches") or []
-        if attaches:
-            kinds = ", ".join(a.get("_type", "?") for a in attaches)
-            text = (text + f"\n[вложение: {kinds}]").strip()
-        if not text:
-            text = "[пусто]"
         prefix = "🕓 " if history else ""
-        out = f"{prefix}{sender_name}: {text}"
+        caption = f"{prefix}{sender_name}: {text}".rstrip()
+
+        if not attaches:
+            try:
+                sent = await self.bot.send_message(
+                    self.group_id, caption if text else f"{prefix}{sender_name}: [пусто]",
+                    message_thread_id=topic_id)
+                self._map(sent, chat_id, msg.get("id"))
+            except Exception as err:
+                _logger.warning("tg send to topic %s failed: %s", topic_id, err)
+            return
+
+        first = True
+        for a in attaches:
+            cap = caption if first else None
+            sent = await self.deliver_attach(topic_id, chat_id, msg.get("id"), a, cap)
+            if first and sent:
+                self._map(sent, chat_id, msg.get("id"))
+            first = False
+
+    def _map(self, sent, chat_id, max_msg_id):
+        if sent and chat_id is not None and max_msg_id:
+            self.store.set_msg_map(sent.message_id, chat_id, max_msg_id)
+
+    async def deliver_attach(self, topic_id, chat_id, msg_id, a, caption):
+        t = a.get("_type")
+        g = self.group_id
         try:
-            sent = await self.bot.send_message(
-                self.group_id, out, message_thread_id=topic_id)
-            if chat_id is not None and msg.get("id"):
-                self.store.set_msg_map(sent.message_id, chat_id, msg["id"])
+            if t == "PHOTO":
+                data = await self.max.download_bytes(a["baseUrl"])
+                return await self.bot.send_photo(
+                    g, BufferedInputFile(data, "photo.jpg"),
+                    caption=caption, message_thread_id=topic_id)
+            if t == "VIDEO":
+                url = await self.max.get_video_url(chat_id, msg_id, a["videoId"])
+                data = await self.max.download_bytes(url)
+                if a.get("videoType") == 1:
+                    sent = await self.bot.send_video_note(
+                        g, BufferedInputFile(data, "round.mp4"),
+                        message_thread_id=topic_id)
+                    if caption:
+                        await self.bot.send_message(g, caption, message_thread_id=topic_id)
+                    return sent
+                return await self.bot.send_video(
+                    g, BufferedInputFile(data, "video.mp4"),
+                    caption=caption, message_thread_id=topic_id)
+            if t == "AUDIO":
+                data = await self.max.download_bytes(a["url"])
+                try:
+                    return await self.bot.send_voice(
+                        g, BufferedInputFile(data, "voice.ogg"),
+                        caption=caption, message_thread_id=topic_id)
+                except Exception:
+                    return await self.bot.send_audio(
+                        g, BufferedInputFile(data, "audio.m4a"),
+                        caption=caption, message_thread_id=topic_id)
+            if t == "FILE":
+                url = await self.max.get_file_url(chat_id, msg_id, a["fileId"])
+                data = await self.max.download_bytes(url)
+                fname = a.get("name") or a.get("fileName") or "file.bin"
+                return await self.bot.send_document(
+                    g, BufferedInputFile(data, fname),
+                    caption=caption, message_thread_id=topic_id)
+            return await self.bot.send_message(
+                g, f"{caption or ''}\n[вложение: {t}]".strip(),
+                message_thread_id=topic_id)
         except Exception as err:
-            _logger.warning("tg send to topic %s failed: %s", topic_id, err)
+            _logger.warning("deliver attach %s failed: %s", t, err)
+            try:
+                return await self.bot.send_message(
+                    g, f"{caption or ''}\n[вложение {t} — не доставлено]".strip(),
+                    message_thread_id=topic_id)
+            except Exception:
+                return None
 
     # ---------- Telegram -> MAX ----------
 

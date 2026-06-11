@@ -159,6 +159,27 @@ class WebMaxClient(MaxClient):
         })
         return resp.get("payload", {}).get("chats", []) or []
 
+    async def download_bytes(self, url: str) -> bytes:
+        import aiohttp
+        if not self._http_pool:
+            self._http_pool = aiohttp.ClientSession()
+        headers = {
+            "User-Agent": config.WEB_USER_AGENT,
+            "Origin": "https://web.max.ru",
+            "Referer": "https://web.max.ru/",
+        }
+        async with self._http_pool.get(url, headers=headers) as resp:
+            resp.raise_for_status()
+            return await resp.read()
+
+    async def get_video_url(self, chat_id: int, message_id, video_id: int) -> str:
+        from vkmax.functions.uploads import download_video
+        return await download_video(self, chat_id, str(message_id), video_id)
+
+    async def get_file_url(self, chat_id: int, message_id, file_id: int) -> str:
+        from vkmax.functions.uploads import download_file
+        return await download_file(self, chat_id, str(message_id), file_id)
+
     async def cleanup_for_reconnect(self):
         if self._keepalive_task:
             self._keepalive_task.cancel()

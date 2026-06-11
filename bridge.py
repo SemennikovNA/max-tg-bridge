@@ -5,7 +5,9 @@ import time
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (Message, MessageReactionUpdated, BufferedInputFile,
-                           InputMediaPhoto, InputMediaVideo)
+                           InputMediaPhoto, InputMediaVideo, ReactionTypeEmoji)
+
+READ_RECEIPT_EMOJI = "👀"
 
 import config
 from max_client import WebMaxClient, load_session
@@ -211,6 +213,12 @@ class Bridge:
     # ---------- MAX -> Telegram ----------
 
     async def on_max_packet(self, client, packet: dict):
+        # opcode 130 — отметка прочтения; если прочитал собеседник → 👀 на мои сообщения
+        if packet.get("opcode") == 130 and packet.get("cmd") == 0:
+            p = packet.get("payload", {})
+            if (not p.get("setAsUnread") and p.get("userId") != self.me_id):
+                await self._read_receipts(p.get("chatId"), p.get("mark"))
+            return
         if packet.get("opcode") != 128 or packet.get("cmd") != 0:
             return
         payload = packet.get("payload", {})
@@ -235,6 +243,18 @@ class Bridge:
                 await self.max.mark_read(chat_id, msg_id, msg.get("time"))
             except Exception as err:
                 _logger.warning("mark_read (deliver) failed: %s", err)
+
+    async def _read_receipts(self, chat_id, mark):
+        if chat_id is None or mark is None:
+            return
+        for tg_msg_id in self.store.unread_outbox(chat_id, mark):
+            try:
+                await self.bot.set_message_reaction(
+                    self.group_id, tg_msg_id,
+                    reaction=[ReactionTypeEmoji(emoji=READ_RECEIPT_EMOJI)])
+                self.store.mark_outbox_read(tg_msg_id)
+            except Exception as err:
+                _logger.warning("read receipt 👀 failed: %s", err)
 
     async def deliver_to_tg(self, topic_id: int, msg: dict,
                             chat_id: int = None, history: bool = False):
@@ -439,6 +459,8 @@ class Bridge:
             _logger.warning("edit in MAX failed: %s", err)
 
     async def on_tg_reaction(self, event: MessageReactionUpdated):
+        if event.user and event.user.is_bot:
+            return  # реакция бота (напр. 👀 read-receipt) — не синкать в MAX
         mapping = self.store.get_max_msg(event.message_id)
         if not mapping:
             return
@@ -456,6 +478,13 @@ class Bridge:
                 await self.max.remove_reaction(chat_id, max_msg_id)
         except Exception as err:
             _logger.warning("reaction sync failed: %s", err)
+
+    def _save_sent(self, tg_msg_id, chat_id, result):
+        msg_obj = (result or {}).get("payload", {}).get("message", {})
+        max_id = msg_obj.get("id")
+        if max_id:
+            self.store.set_msg_map(tg_msg_id, chat_id, max_id)
+            self.store.add_outbox(tg_msg_id, chat_id, msg_obj.get("time") or 0)
 
     def reply_target(self, message: Message):
         rt = message.reply_to_message
@@ -479,13 +508,8 @@ class Bridge:
             _logger.warning("max send to %s failed: %s", chat_id, err)
             await message.reply(f"⚠️ Не отправлено в MAX: {err}")
             return
-        # сохраняем tg<->max id отправленного (для редактирования/реакций)
-        try:
-            max_id = (result or {}).get("payload", {}).get("message", {}).get("id")
-            if max_id:
-                self.store.set_msg_map(message.message_id, chat_id, max_id)
-        except Exception:
-            pass
+        # сохраняем tg<->max id + outbox (для редактирования/реакций/read-receipt)
+        self._save_sent(message.message_id, chat_id, result)
         # B: ответил -> помечаем последнее входящее прочитанным в MAX
         last = self.last_incoming.get(chat_id)
         if last:
@@ -534,9 +558,7 @@ class Bridge:
             result = await send_message(
                 self.max, chat_id, message.caption or "",
                 attaches=[attach], reply_to=self.reply_target(message))
-            max_id = (result or {}).get("payload", {}).get("message", {}).get("id")
-            if max_id:
-                self.store.set_msg_map(message.message_id, chat_id, max_id)
+            self._save_sent(message.message_id, chat_id, result)
         except Exception as err:
             _logger.warning("tg->max media %s failed: %s", kind, err)
             await message.reply(f"⚠️ Медиа не отправлено в MAX: {err}")
@@ -576,9 +598,7 @@ class Bridge:
             result = await send_message(
                 self.max, chat_id, caption,
                 attaches=attaches, reply_to=self.reply_target(first))
-            max_id = (result or {}).get("payload", {}).get("message", {}).get("id")
-            if max_id:
-                self.store.set_msg_map(first.message_id, chat_id, max_id)
+            self._save_sent(first.message_id, chat_id, result)
         except Exception as err:
             _logger.warning("group send failed: %s", err)
             await first.reply(f"⚠️ Альбом не отправлен в MAX: {err}")

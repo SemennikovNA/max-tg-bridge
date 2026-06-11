@@ -27,8 +27,30 @@ class Storage:
                 chat_id    INTEGER,
                 max_msg_id TEXT
             );
+            CREATE TABLE IF NOT EXISTS outbox (
+                tg_msg_id INTEGER PRIMARY KEY,
+                chat_id   INTEGER,
+                ts        INTEGER,
+                read      INTEGER DEFAULT 0
+            );
             """
         )
+        self.db.commit()
+
+    def add_outbox(self, tg_msg_id: int, chat_id: int, ts: int):
+        self.db.execute(
+            "INSERT OR REPLACE INTO outbox (tg_msg_id, chat_id, ts, read) "
+            "VALUES (?, ?, ?, 0)", (tg_msg_id, chat_id, ts or 0))
+        self.db.commit()
+
+    def unread_outbox(self, chat_id: int, mark: int):
+        rows = self.db.execute(
+            "SELECT tg_msg_id FROM outbox WHERE chat_id=? AND read=0 AND ts<=?",
+            (chat_id, mark)).fetchall()
+        return [r[0] for r in rows]
+
+    def mark_outbox_read(self, tg_msg_id: int):
+        self.db.execute("UPDATE outbox SET read=1 WHERE tg_msg_id=?", (tg_msg_id,))
         self.db.commit()
 
     def set_msg_map(self, tg_msg_id: int, chat_id: int, max_msg_id: str):

@@ -343,9 +343,29 @@ class Bridge:
         async def _on_tg(message: Message):
             await self.on_tg_reply(message)
 
+        @self.dp.edited_message(
+            F.chat.id == self.group_id,
+            F.message_thread_id.is_not(None),
+            F.text,
+        )
+        async def _on_edit(message: Message):
+            await self.on_tg_edit(message)
+
         @self.dp.message_reaction(F.chat.id == self.group_id)
         async def _on_reaction(event: MessageReactionUpdated):
             await self.on_tg_reaction(event)
+
+    async def on_tg_edit(self, message: Message):
+        if message.from_user and message.from_user.is_bot:
+            return
+        mapping = self.store.get_max_msg(message.message_id)
+        if not mapping:
+            return
+        chat_id, max_msg_id = mapping
+        try:
+            await self.max.edit_message(chat_id, max_msg_id, message.text)
+        except Exception as err:
+            _logger.warning("edit in MAX failed: %s", err)
 
     async def on_tg_reaction(self, event: MessageReactionUpdated):
         mapping = self.store.get_max_msg(event.message_id)
@@ -374,11 +394,18 @@ class Bridge:
             return
         await asyncio.sleep(random.uniform(config.HUMAN_DELAY_MIN, config.HUMAN_DELAY_MAX))
         try:
-            await self.max.send_text(chat_id, message.text)
+            result = await self.max.send_text(chat_id, message.text)
         except Exception as err:
             _logger.warning("max send to %s failed: %s", chat_id, err)
             await message.reply(f"⚠️ Не отправлено в MAX: {err}")
             return
+        # сохраняем tg<->max id отправленного (для редактирования/реакций)
+        try:
+            max_id = (result or {}).get("payload", {}).get("message", {}).get("id")
+            if max_id:
+                self.store.set_msg_map(message.message_id, chat_id, max_id)
+        except Exception:
+            pass
         # B: ответил -> помечаем последнее входящее прочитанным в MAX
         last = self.last_incoming.get(chat_id)
         if last:

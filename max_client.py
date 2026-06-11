@@ -131,6 +131,15 @@ class WebMaxClient(MaxClient):
         from vkmax.functions.messages import send_message
         return await send_message(self, chat_id, text)
 
+    async def edit_message(self, chat_id: int, message_id, text: str):
+        return await self.invoke_method(67, {
+            "chatId": chat_id,
+            "messageId": str(message_id),
+            "text": text,
+            "elements": [],
+            "attachments": [],
+        })
+
     async def mark_read(self, chat_id: int, message_id, mark=None):
         return await self.invoke_method(50, {
             "type": "READ_MESSAGE",

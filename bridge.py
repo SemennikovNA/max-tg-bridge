@@ -26,6 +26,7 @@ class Bridge:
         self.session = None
         self.chats_meta = {}
         self.last_incoming = {}
+        self.media_groups = {}
         self._register_handlers()
 
     # ---------- names ----------
@@ -411,6 +412,14 @@ class Bridge:
         except Exception as err:
             _logger.warning("reaction sync failed: %s", err)
 
+    def reply_target(self, message: Message):
+        rt = message.reply_to_message
+        if rt and rt.message_id != message.message_thread_id:
+            mapping = self.store.get_max_msg(rt.message_id)
+            if mapping:
+                return mapping[1]
+        return None
+
     async def on_tg_reply(self, message: Message):
         if message.from_user and message.from_user.is_bot:
             return
@@ -419,7 +428,8 @@ class Bridge:
             return
         await asyncio.sleep(random.uniform(config.HUMAN_DELAY_MIN, config.HUMAN_DELAY_MAX))
         try:
-            result = await self.max.send_text(chat_id, message.text)
+            result = await self.max.send_text(
+                chat_id, message.text, reply_to=self.reply_target(message))
         except Exception as err:
             _logger.warning("max send to %s failed: %s", chat_id, err)
             await message.reply(f"⚠️ Не отправлено в MAX: {err}")
@@ -439,44 +449,94 @@ class Bridge:
             except Exception as err:
                 _logger.warning("mark_read (reply) failed: %s", err)
 
+    async def _upload_media(self, message: Message, kind: str, chat_id: int):
+        from vkmax.functions.uploads import upload_photo, upload_video, upload_file
+        if kind == "photo":
+            buf = await self.bot.download(message.photo[-1].file_id)
+            return await upload_photo(self.max, chat_id, buf)
+        if kind == "video":
+            buf = await self.bot.download(message.video.file_id)
+            return await upload_video(self.max, chat_id, buf)
+        if kind == "video_note":
+            buf = await self.bot.download(message.video_note.file_id)
+            attach = await upload_video(self.max, chat_id, buf)
+            attach["videoType"] = 1
+            return attach
+        if kind == "document":
+            buf = await self.bot.download(message.document.file_id)
+            return await upload_file(
+                self.max, chat_id, buf, message.document.file_name or "file.bin")
+        return None
+
     async def on_tg_media(self, message: Message, kind: str):
         if message.from_user and message.from_user.is_bot:
+            return
+        if kind == "voice":
+            await message.reply("🎤 Голосовые MAX (web) не поддерживает — не отправлено.")
+            return
+        if message.media_group_id:
+            self._buffer_media_group(message, kind)
             return
         chat_id = self.store.chat_for_topic(message.message_thread_id)
         if chat_id is None:
             return
         await asyncio.sleep(random.uniform(config.HUMAN_DELAY_MIN, config.HUMAN_DELAY_MAX))
-        from vkmax.functions.uploads import upload_photo, upload_video, upload_file
         from vkmax.functions.messages import send_message
-        caption = message.caption or ""
         try:
-            if kind == "photo":
-                buf = await self.bot.download(message.photo[-1].file_id)
-                attach = await upload_photo(self.max, chat_id, buf)
-            elif kind == "video":
-                buf = await self.bot.download(message.video.file_id)
-                attach = await upload_video(self.max, chat_id, buf)
-            elif kind == "video_note":
-                buf = await self.bot.download(message.video_note.file_id)
-                attach = await upload_video(self.max, chat_id, buf)
-                attach["videoType"] = 1  # пометить как кружок (видеосообщение)
-            elif kind == "voice":
-                await message.reply(
-                    "🎤 Голосовые MAX (web) не поддерживает — не отправлено.")
+            attach = await self._upload_media(message, kind, chat_id)
+            if not attach:
                 return
-            elif kind == "document":
-                buf = await self.bot.download(message.document.file_id)
-                attach = await upload_file(
-                    self.max, chat_id, buf, message.document.file_name or "file.bin")
-            else:
-                return
-            result = await send_message(self.max, chat_id, caption, attaches=[attach])
+            result = await send_message(
+                self.max, chat_id, message.caption or "",
+                attaches=[attach], reply_to=self.reply_target(message))
             max_id = (result or {}).get("payload", {}).get("message", {}).get("id")
             if max_id:
                 self.store.set_msg_map(message.message_id, chat_id, max_id)
         except Exception as err:
             _logger.warning("tg->max media %s failed: %s", kind, err)
             await message.reply(f"⚠️ Медиа не отправлено в MAX: {err}")
+
+    def _buffer_media_group(self, message: Message, kind: str):
+        gid = message.media_group_id
+        grp = self.media_groups.get(gid)
+        if grp is None:
+            grp = {"items": []}
+            self.media_groups[gid] = grp
+            asyncio.create_task(self._flush_media_group(gid))
+        grp["items"].append((kind, message))
+
+    async def _flush_media_group(self, gid: str):
+        await asyncio.sleep(1.5)
+        grp = self.media_groups.pop(gid, None)
+        if not grp or not grp["items"]:
+            return
+        first = grp["items"][0][1]
+        chat_id = self.store.chat_for_topic(first.message_thread_id)
+        if chat_id is None:
+            return
+        caption = next((m.caption for _, m in grp["items"] if m.caption), "") or ""
+        await asyncio.sleep(random.uniform(config.HUMAN_DELAY_MIN, config.HUMAN_DELAY_MAX))
+        from vkmax.functions.messages import send_message
+        attaches = []
+        for k, m in grp["items"]:
+            try:
+                a = await self._upload_media(m, k, chat_id)
+                if a:
+                    attaches.append(a)
+            except Exception as err:
+                _logger.warning("group media %s failed: %s", k, err)
+        if not attaches:
+            return
+        try:
+            result = await send_message(
+                self.max, chat_id, caption,
+                attaches=attaches, reply_to=self.reply_target(first))
+            max_id = (result or {}).get("payload", {}).get("message", {}).get("id")
+            if max_id:
+                self.store.set_msg_map(first.message_id, chat_id, max_id)
+        except Exception as err:
+            _logger.warning("group send failed: %s", err)
+            await first.reply(f"⚠️ Альбом не отправлен в MAX: {err}")
 
     # ---------- lifecycle ----------
 

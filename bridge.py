@@ -111,6 +111,7 @@ class Bridge:
         await self.setup_service_topic()
         await self.init_topics(chats)
         await self.refresh_topic_names()
+        await self.catch_up(chats)
         self.max.set_reconnect_callback(self._reconnect)
         self.max.on_packet(self.on_max_packet)
 
@@ -148,10 +149,16 @@ class Bridge:
                 try:
                     session = load_session()
                     await self.max.connect()
-                    await self.max.login_by_token(
+                    resp = await self.max.login_by_token(
                         session["auth_token"], session["device_id"])
                     self.max.on_packet(self.on_max_packet)
                     _logger.info("MAX reconnected")
+                    try:
+                        chats = resp.get("payload", {}).get("chats", [])
+                        self.chats_meta = {c["id"]: c for c in chats}
+                        await self.catch_up(chats)
+                    except Exception as err:
+                        _logger.warning("catch_up after reconnect failed: %s", err)
                     return
                 except Exception as err:
                     _logger.warning("MAX reconnect failed: %s; retry in %ss",
@@ -174,6 +181,34 @@ class Bridge:
                 _logger.warning("delete ignored topic %s failed: %s", topic_id, err)
             self.store.del_topic(chat_id)
             _logger.info("removed ignored chat %s (topic %s)", chat_id, topic_id)
+
+    async def catch_up(self, chats: list):
+        """Подтянуть сообщения, пропущенные пока мост был offline."""
+        for chat in chats:
+            chat_id = chat.get("id")
+            if chat_id in config.IGNORED_CHAT_IDS:
+                continue
+            topic_id = self.store.get_topic(chat_id)
+            if topic_id is None:
+                continue  # новый чат — историю зальёт init_topics
+            last = chat.get("lastMessage") or {}
+            last_id = last.get("id")
+            if not last_id or self.store.is_seen(last_id):
+                continue  # ничего не пропущено
+            try:
+                msgs = await self.max.get_history(
+                    chat_id, last.get("time"), config.CATCHUP_DEPTH)
+            except Exception as err:
+                _logger.warning("catch_up history %s failed: %s", chat_id, err)
+                continue
+            fresh = [m for m in msgs if not self.store.is_seen(m.get("id"))]
+            fresh.sort(key=lambda m: m.get("time") or 0)
+            if fresh:
+                _logger.info("catch_up: chat %s — %d missed", chat_id, len(fresh))
+            for m in fresh:
+                self.store.mark_seen(m.get("id"))
+                await self.deliver_to_tg(topic_id, m, chat_id=chat_id)
+                await asyncio.sleep(0.3)
 
     async def init_topics(self, chats: list):
         new = [c for c in chats

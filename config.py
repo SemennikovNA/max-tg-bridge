@@ -42,6 +42,7 @@ HUMAN_DELAY_MAX = float(os.getenv("HUMAN_DELAY_MAX") or "5.0")
 
 HISTORY_DEPTH = int(os.getenv("HISTORY_DEPTH") or "10")
 TOPIC_THROTTLE = float(os.getenv("TOPIC_THROTTLE") or "2.0")
+CATCHUP_DEPTH = int(os.getenv("CATCHUP_DEPTH") or "30")
 
 IGNORED_CHAT_IDS = {
     int(x) for x in (os.getenv("IGNORED_CHAT_IDS") or "0").split(",") if x.strip()

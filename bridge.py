@@ -221,6 +221,12 @@ class Bridge:
     # ---------- MAX -> Telegram ----------
 
     async def on_max_packet(self, client, packet: dict):
+        # opcode 135 — обновление чата; status REMOVED → удалить топик
+        if packet.get("opcode") == 135 and packet.get("cmd") == 0:
+            chat = packet.get("payload", {}).get("chat", {})
+            if chat.get("status") == "REMOVED":
+                await self._remove_chat(chat.get("id"))
+            return
         # opcode 130 — отметка прочтения; если прочитал собеседник → 👀 на мои сообщения
         if packet.get("opcode") == 130 and packet.get("cmd") == 0:
             p = packet.get("payload", {})
@@ -251,6 +257,18 @@ class Bridge:
                 await self.max.mark_read(chat_id, msg_id, msg.get("time"))
             except Exception as err:
                 _logger.warning("mark_read (deliver) failed: %s", err)
+
+    async def _remove_chat(self, chat_id):
+        topic_id = self.store.get_topic(chat_id)
+        self.chats_meta.pop(chat_id, None)
+        if topic_id is None:
+            return
+        try:
+            await self.bot.delete_forum_topic(self.group_id, topic_id)
+        except Exception as err:
+            _logger.warning("delete topic %s failed: %s", topic_id, err)
+        self.store.del_topic(chat_id)
+        _logger.info("chat %s REMOVED -> deleted topic %s", chat_id, topic_id)
 
     async def _read_receipts(self, chat_id, mark):
         if chat_id is None or mark is None:

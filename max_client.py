@@ -31,6 +31,29 @@ class WebMaxClient(MaxClient):
         self._fixed_device_id = device_id or f"{uuid.uuid4()}"
         self._user_callback: Optional[PacketCallback] = None
 
+    async def invoke_method(self, *args, **kwargs):
+        # переживаем окно reconnect: при разрыве ждём восстановления и повторяем
+        last_err = None
+        for attempt in range(3):
+            try:
+                return await super().invoke_method(*args, **kwargs)
+            except Exception as err:
+                last_err = err
+                msg = str(err).lower()
+                recoverable = ("not connected" in msg
+                               or "closed" in msg
+                               or "closing" in msg)
+                if not recoverable or attempt == 2:
+                    raise
+                # ждём, пока reconnect поднимет соединение (до ~15с)
+                for _ in range(30):
+                    if self._connection is not None:
+                        break
+                    await asyncio.sleep(0.5)
+                if self._connection is None:
+                    raise
+        raise last_err
+
     async def _send_hello_packet(self, device_id: Optional[str] = None):
         self._device_id = device_id or self._fixed_device_id
         self._fixed_device_id = self._device_id

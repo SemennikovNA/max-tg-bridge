@@ -504,6 +504,28 @@ class Bridge:
         async def _service(message: Message):
             await self.on_service_command(message)
 
+        @self.dp.message(F.chat.id == self.group_id, F.forum_topic_closed)
+        async def _closed(message: Message):
+            await self.on_topic_closed(message)
+
+    async def on_topic_closed(self, message: Message):
+        topic_id = message.message_thread_id
+        chat_id = self.store.chat_for_topic(topic_id)
+        if chat_id is None:
+            return
+        try:
+            await self.max.delete_chat(chat_id)
+            _logger.info("topic %s closed -> delete chat %s in MAX", topic_id, chat_id)
+        except Exception as err:
+            _logger.warning("delete_chat %s failed: %s", chat_id, err)
+        # топик уберётся по эхо opcode 135 REMOVED; подстраховка:
+        try:
+            await self.bot.delete_forum_topic(self.group_id, topic_id)
+        except Exception:
+            pass
+        self.store.del_topic(chat_id)
+        self.chats_meta.pop(chat_id, None)
+
     async def on_service_command(self, message: Message):
         if message.from_user and message.from_user.is_bot:
             return

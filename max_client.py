@@ -123,6 +123,13 @@ class WebMaxClient(MaxClient):
     async def subscribe_chat(self, chat_id: int):
         return await self.invoke_method(75, {"chatId": chat_id, "subscribe": True})
 
+    async def delete_chat(self, chat_id: int, last_event_time=None):
+        return await self.invoke_method(52, {
+            "chatId": chat_id,
+            "lastEventTime": int(last_event_time or time.time() * 1000),
+            "forAll": False,
+        })
+
     async def get_contacts(self, ids) -> list:
         resp = await self.invoke_method(32, {"contactIds": [int(i) for i in ids]})
         return resp.get("payload", {}).get("contacts", []) or []

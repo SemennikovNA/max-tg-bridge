@@ -386,6 +386,30 @@ class Bridge:
                 return await self.bot.send_document(
                     g, BufferedInputFile(data, fname),
                     caption=caption, message_thread_id=topic_id)
+            if t == "STICKER":
+                import gzip
+                # 1) анимированный: lottie -> .tgs (gzip lottie json)
+                if a.get("stickerType") == "LOTTIE" and a.get("lottieUrl"):
+                    try:
+                        raw = await self.max.download_bytes(a["lottieUrl"])
+                        tgs = gzip.compress(raw)
+                        return await self.bot.send_sticker(
+                            g, BufferedInputFile(tgs, "s.tgs"),
+                            message_thread_id=topic_id)
+                    except Exception as e:
+                        _logger.info("tgs sticker rejected (%s), fallback to image", e)
+                # 2) статичная картинка
+                if a.get("url"):
+                    data = await self.max.download_bytes(a["url"])
+                    try:
+                        return await self.bot.send_sticker(
+                            g, BufferedInputFile(data, "s.webp"),
+                            message_thread_id=topic_id)
+                    except Exception:
+                        return await self.bot.send_photo(
+                            g, BufferedInputFile(data, "s.png"),
+                            caption=caption, message_thread_id=topic_id)
+                raise RuntimeError("sticker: no url")
             return await self.bot.send_message(
                 g, f"{caption or ''}\n[вложение: {t}]".strip(),
                 message_thread_id=topic_id)

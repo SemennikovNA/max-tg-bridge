@@ -116,6 +116,13 @@ class WebMaxClient(MaxClient):
 
         self.set_packet_callback(internal)
 
+    async def search_by_phone(self, phone: str):
+        resp = await self.invoke_method(46, {"phone": phone})
+        return resp.get("payload", {}).get("contact")
+
+    async def subscribe_chat(self, chat_id: int):
+        return await self.invoke_method(75, {"chatId": chat_id, "subscribe": True})
+
     async def get_contacts(self, ids) -> list:
         resp = await self.invoke_method(32, {"contactIds": [int(i) for i in ids]})
         return resp.get("payload", {}).get("contacts", []) or []

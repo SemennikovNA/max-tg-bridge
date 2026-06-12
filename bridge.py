@@ -108,10 +108,18 @@ class Bridge:
         chats = payload.get("chats", [])
         self.chats_meta = {c["id"]: c for c in chats}
         await self.cleanup_ignored()
+        await self.setup_service_topic()
         await self.init_topics(chats)
         await self.refresh_topic_names()
         self.max.set_reconnect_callback(self._reconnect)
         self.max.on_packet(self.on_max_packet)
+
+    async def setup_service_topic(self):
+        try:
+            await self.bot.edit_general_forum_topic(
+                self.group_id, name="⚙️ Сервисные функции")
+        except Exception as err:
+            _logger.info("rename General skipped: %s", err)
 
     async def refresh_topic_names(self):
         for chat_id, meta in self.chats_meta.items():
@@ -284,6 +292,9 @@ class Bridge:
         albumable = [a for a in attaches
                      if a.get("_type") == "PHOTO"
                      or (a.get("_type") == "VIDEO" and a.get("videoType") != 1)]
+        _logger.info("deliver: attaches=%d albumable=%d types=%s",
+                     len(attaches), len(albumable),
+                     [a.get("_type") for a in attaches])
         sent_first = None
         used_caption = False
 
@@ -301,14 +312,18 @@ class Bridge:
                             media=BufferedInputFile(data, "v.mp4"), caption=cap))
                 except Exception as err:
                     _logger.warning("album item failed: %s", err)
-            if media:
+            # Telegram: media group максимум 10 элементов -> бьём на чанки
+            for chunk_start in range(0, len(media), 10):
+                chunk = media[chunk_start:chunk_start + 10]
                 try:
                     sent = await self.bot.send_media_group(
-                        self.group_id, media, message_thread_id=topic_id)
-                    sent_first = sent[0] if sent else None
+                        self.group_id, chunk, message_thread_id=topic_id)
+                    if sent_first is None and sent:
+                        sent_first = sent[0]
                     used_caption = True
                 except Exception as err:
-                    _logger.warning("send_media_group failed: %s", err)
+                    _logger.warning("send_media_group failed (chunk %d, size %d): %s",
+                                    chunk_start, len(chunk), err)
             rest = [a for a in attaches if a not in albumable]
         else:
             rest = attaches
@@ -465,6 +480,48 @@ class Bridge:
         )
         async def _on_edit(message: Message):
             await self.on_tg_edit(message)
+
+        @self.dp.message(F.chat.id == self.group_id, F.text,
+                         F.message_thread_id.is_(None))
+        async def _service(message: Message):
+            await self.on_service_command(message)
+
+    async def on_service_command(self, message: Message):
+        if message.from_user and message.from_user.is_bot:
+            return
+        import re
+        digits = re.sub(r"[^\d+]", "", (message.text or "").replace("/find", ""))
+        if len(re.sub(r"\D", "", digits)) < 10:
+            await message.reply(
+                "📇 Отправь номер телефона (например +79991234567) — "
+                "найду контакт в MAX и создам чат.")
+            return
+        if not digits.startswith("+"):
+            digits = "+" + digits
+        try:
+            contact = await self.max.search_by_phone(digits)
+        except Exception as err:
+            await message.reply(f"⚠️ Ошибка поиска: {err}")
+            return
+        if not contact:
+            await message.reply(f"❌ {digits} не найден в MAX.")
+            return
+        peer_id = int(contact.get("id"))
+        name = self._name_from_contact(contact) or f"id{peer_id}"
+        chat_id = self.me_id ^ peer_id
+        try:
+            await self.max.subscribe_chat(chat_id)
+        except Exception as err:
+            _logger.warning("subscribe_chat failed: %s", err)
+        self.chats_meta[chat_id] = {
+            "id": chat_id, "type": "DIALOG",
+            "participants": {str(self.me_id): 0, str(peer_id): 0},
+        }
+        self.store.set_name(peer_id, name)
+        topic_id = await self.ensure_topic(chat_id, name)
+        await message.reply(
+            f"✅ Чат с *{name}* ({digits}) готов — открой топик «{name}» и пиши.",
+            parse_mode="Markdown")
 
         @self.dp.message_reaction(F.chat.id == self.group_id)
         async def _on_reaction(event: MessageReactionUpdated):

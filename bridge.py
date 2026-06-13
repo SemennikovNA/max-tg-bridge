@@ -256,6 +256,10 @@ class Bridge:
     # ---------- MAX -> Telegram ----------
 
     async def on_max_packet(self, client, packet: dict):
+        # opcode 137 — входящий звонок
+        if packet.get("opcode") == 137 and packet.get("cmd") == 0:
+            await self._notify_incoming_call(packet.get("payload", {}))
+            return
         # opcode 135 — обновление чата; status REMOVED → удалить топик
         if packet.get("opcode") == 135 and packet.get("cmd") == 0:
             chat = packet.get("payload", {}).get("chat", {})
@@ -292,6 +296,23 @@ class Bridge:
                 await self.max.mark_read(chat_id, msg_id, msg.get("time"))
             except Exception as err:
                 _logger.warning("mark_read (deliver) failed: %s", err)
+
+    async def _notify_incoming_call(self, p: dict):
+        caller = p.get("callerId")
+        ctype = p.get("type", "AUDIO")
+        emoji = "📹" if ctype == "VIDEO" else "📞"
+        kind = "видео" if ctype == "VIDEO" else "аудио"
+        name = await self.resolve_name(caller) if caller and caller != self.me_id else "?"
+        text = f"{emoji} Входящий {kind}-звонок от {name}"
+        chat_id = p.get("chatId") or (self.me_id ^ int(caller) if caller else None)
+        topic_id = self.store.get_topic(chat_id) if chat_id else None
+        try:
+            if topic_id is not None:
+                await self.bot.send_message(self.group_id, text, message_thread_id=topic_id)
+            else:
+                await self.bot.send_message(self.group_id, text)  # General
+        except Exception as err:
+            _logger.warning("call notify failed: %s", err)
 
     async def _remove_chat(self, chat_id):
         topic_id = self.store.get_topic(chat_id)
@@ -454,6 +475,18 @@ class Bridge:
                 return await self.bot.send_document(
                     g, BufferedInputFile(data, fname),
                     caption=caption, message_thread_id=topic_id)
+            if t == "CALL":
+                ctype = a.get("callType", "AUDIO")
+                dur = a.get("duration", 0) or 0
+                cemoji = "📹" if ctype == "VIDEO" else "📞"
+                if a.get("hangupType") == "CANCELED" or dur == 0:
+                    body = f"📵 Пропущенный {'видео' if ctype == 'VIDEO' else 'аудио'}-звонок"
+                else:
+                    m, s = dur // 60000, (dur // 1000) % 60
+                    body = f"{cemoji} Звонок · {m}:{s:02d}"
+                return await self.bot.send_message(
+                    g, f"{caption or ''}\n{body}".strip(),
+                    message_thread_id=topic_id)
             if t == "STICKER":
                 import gzip
                 # 1) анимированный: lottie -> .tgs (gzip lottie json)

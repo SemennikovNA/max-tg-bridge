@@ -249,7 +249,8 @@ class Bridge:
                     self.group_id, topic_id, name=name[:128])
                 return topic_id
             except Exception as err:
-                if "not modified" in str(err).lower():
+                low = str(err).lower()
+                if "not_modified" in low or "not modified" in low:
                     return topic_id  # жив, имя не изменилось
                 self.store.del_topic(chat_id)  # удалён руками → пересоздать
         new_topic = await self.create_topic(name)

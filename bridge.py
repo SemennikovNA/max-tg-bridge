@@ -240,6 +240,22 @@ class Bridge:
         self.store.set_topic(chat_id, topic_id)
         return topic_id
 
+    async def ensure_topic_fresh(self, chat_id: int, name: str) -> int:
+        """Как ensure_topic, но проверяет, что топик реально жив (не удалён руками)."""
+        topic_id = self.store.get_topic(chat_id)
+        if topic_id is not None:
+            try:
+                await self.bot.edit_forum_topic(
+                    self.group_id, topic_id, name=name[:128])
+                return topic_id
+            except Exception as err:
+                if "not modified" in str(err).lower():
+                    return topic_id  # жив, имя не изменилось
+                self.store.del_topic(chat_id)  # удалён руками → пересоздать
+        new_topic = await self.create_topic(name)
+        self.store.set_topic(chat_id, new_topic)
+        return new_topic
+
     async def send_history(self, chat_id: int, topic_id: int, from_time):
         if not from_time:
             return
@@ -626,7 +642,7 @@ class Bridge:
             "participants": {str(self.me_id): 0, str(peer_id): 0},
         }
         self.store.set_name(peer_id, name)
-        topic_id = await self.ensure_topic(chat_id, name)
+        await self.ensure_topic_fresh(chat_id, name)
         await message.reply(
             f"✅ Чат с *{name}* ({digits}) готов — открой топик «{name}» и пиши.",
             parse_mode="Markdown")

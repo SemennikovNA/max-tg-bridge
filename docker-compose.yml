@@ -1,7 +1,7 @@
 services:
   bridge:
     build: .
-    container_name: max-tg-bridge
+    container_name: ${CONTAINER_NAME:-max-tg-bridge}
     restart: unless-stopped
     env_file: .env
     environment:

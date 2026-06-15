@@ -203,6 +203,10 @@ class Bridge:
 
     async def catch_up(self, chats: list):
         """Подтянуть сообщения, пропущенные пока мост был offline."""
+        last_online = self.store.get_meta("last_online_ms")
+        if not last_online:
+            return  # первый запуск — историю заливает init_topics, catch_up не нужен
+        hwm = int(last_online)
         for chat in chats:
             chat_id = chat.get("id")
             if chat_id in config.IGNORED_CHAT_IDS:
@@ -220,7 +224,9 @@ class Bridge:
             except Exception as err:
                 _logger.warning("catch_up history %s failed: %s", chat_id, err)
                 continue
-            fresh = [m for m in msgs if not self.store.is_seen(m.get("id"))]
+            # доставляем только пришедшее ПОКА мост был offline (time > last_online)
+            fresh = [m for m in msgs
+                     if (m.get("time") or 0) > hwm and not self.store.is_seen(m.get("id"))]
             fresh.sort(key=lambda m: m.get("time") or 0)
             if fresh:
                 _logger.info("catch_up: chat %s — %d missed", chat_id, len(fresh))
@@ -864,6 +870,7 @@ class Bridge:
         while True:
             try:
                 config.HEARTBEAT_FILE.write_text(str(int(time.time())))
+                self.store.set_meta("last_online_ms", str(int(time.time() * 1000)))
             except Exception:
                 pass
             await asyncio.sleep(config.HEARTBEAT_INTERVAL)

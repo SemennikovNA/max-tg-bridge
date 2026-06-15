@@ -84,6 +84,12 @@ class Storage:
             (tg_msg_id,)).fetchone()
         return (row[0], row[1]) if row else None
 
+    def get_tg_by_max(self, max_msg_id):
+        row = self.db.execute(
+            "SELECT tg_msg_id FROM msg_map WHERE max_msg_id=?",
+            (str(max_msg_id),)).fetchone()
+        return row[0] if row else None
+
     def get_topic(self, chat_id: int):
         row = self.db.execute(
             "SELECT topic_id FROM topics WHERE chat_id=?", (chat_id,)).fetchone()

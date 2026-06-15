@@ -292,6 +292,10 @@ class Bridge:
     # ---------- MAX -> Telegram ----------
 
     async def on_max_packet(self, client, packet: dict):
+        # opcode 155 — реакция на сообщение (собеседник реагирует на моё) -> показать в TG
+        if packet.get("opcode") == 155 and packet.get("cmd") == 0:
+            await self._sync_reaction_to_tg(packet.get("payload", {}))
+            return
         # opcode 137 — входящий звонок
         if packet.get("opcode") == 137 and packet.get("cmd") == 0:
             await self._notify_incoming_call(packet.get("payload", {}))
@@ -332,6 +336,25 @@ class Bridge:
                 await self.max.mark_read(chat_id, msg_id, msg.get("time"))
             except Exception as err:
                 _logger.warning("mark_read (deliver) failed: %s", err)
+
+    async def _sync_reaction_to_tg(self, p: dict):
+        max_msg_id = p.get("messageId")
+        tg_msg_id = self.store.get_tg_by_max(max_msg_id) if max_msg_id else None
+        if tg_msg_id is None:
+            return  # реакция не на наше отправленное сообщение
+        counters = p.get("counters") or []
+        emoji = counters[-1].get("reaction") if counters else READ_RECEIPT_EMOJI
+        try:
+            await self.bot.set_message_reaction(
+                self.group_id, tg_msg_id, reaction=[ReactionTypeEmoji(emoji=emoji)])
+        except Exception:
+            # эмодзи не из набора Telegram -> пробуем toggle FE0F, иначе 👀
+            try:
+                alt = emoji.replace("️", "") if "️" in emoji else emoji + "️"
+                await self.bot.set_message_reaction(
+                    self.group_id, tg_msg_id, reaction=[ReactionTypeEmoji(emoji=alt)])
+            except Exception as err:
+                _logger.warning("sync reaction %r failed: %s", emoji, err)
 
     async def _notify_incoming_call(self, p: dict):
         caller = p.get("callerId")

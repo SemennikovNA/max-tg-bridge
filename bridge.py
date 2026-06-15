@@ -6,6 +6,7 @@ import time
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (Message, MessageReactionUpdated, BufferedInputFile,
                            InputMediaPhoto, InputMediaVideo, ReactionTypeEmoji)
+from aiogram.exceptions import TelegramRetryAfter
 
 READ_RECEIPT_EMOJI = "👀"
 
@@ -21,6 +22,7 @@ class Bridge:
         self.store = Storage()
         self.max: WebMaxClient = None
         self.bot = Bot(config.TELEGRAM_BOT_TOKEN)
+        self.bot.session.middleware(self._flood_mw)
         self.dp = Dispatcher()
         self.group_id = config.TELEGRAM_GROUP_ID
         self.me_id = None
@@ -31,6 +33,15 @@ class Bridge:
         self.last_incoming = {}
         self.media_groups = {}
         self._register_handlers()
+
+    async def _flood_mw(self, make_request, bot, method):
+        for _ in range(6):
+            try:
+                return await make_request(bot, method)
+            except TelegramRetryAfter as err:
+                _logger.info("flood control: wait %ss", err.retry_after)
+                await asyncio.sleep(err.retry_after + 1)
+        return await make_request(bot, method)
 
     # ---------- names ----------
 
@@ -45,6 +56,8 @@ class Bridge:
                 or None)
 
     async def resolve_name(self, user_id: int) -> str:
+        if not user_id:
+            return "?"
         cached = self.store.get_name(user_id)
         if cached:
             return cached
@@ -365,7 +378,8 @@ class Bridge:
                             chat_id: int = None, history: bool = False):
         sender = msg.get("sender")
         text = (msg.get("text") or "").strip()
-        attaches = msg.get("attaches") or []
+        attaches = [a for a in (msg.get("attaches") or [])
+                    if a.get("_type") != "INLINE_KEYBOARD"]
         prefix = "🕓 " if history else ""
         if sender == self.me_id:
             label = "Я: "

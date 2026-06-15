@@ -9,6 +9,7 @@ from aiogram.types import (Message, MessageReactionUpdated, BufferedInputFile,
 from aiogram.exceptions import TelegramRetryAfter
 
 READ_RECEIPT_EMOJI = "👀"
+SERVICE_ATTACH = {"INLINE_KEYBOARD", "CONTROL"}
 
 import config
 from max_client import WebMaxClient, load_session
@@ -407,8 +408,12 @@ class Bridge:
                             chat_id: int = None, history: bool = False):
         sender = msg.get("sender")
         text = (msg.get("text") or "").strip()
-        attaches = [a for a in (msg.get("attaches") or [])
-                    if a.get("_type") != "INLINE_KEYBOARD"]
+        raw_attaches = msg.get("attaches") or []
+        attaches = [a for a in raw_attaches
+                    if a.get("_type") not in SERVICE_ATTACH]
+        # только служебное вложение (CONTROL и т.п.) без текста — не доставляем
+        if not text and not attaches and raw_attaches:
+            return
         prefix = "🕓 " if history else ""
         if sender == self.me_id:
             label = "Я: "

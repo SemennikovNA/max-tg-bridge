@@ -33,8 +33,27 @@ class Storage:
                 ts        INTEGER,
                 read      INTEGER DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT
+            );
             """
         )
+        self.db.commit()
+
+    def get_meta(self, key: str):
+        row = self.db.execute(
+            "SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_meta(self, key: str, value: str):
+        self.db.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
+        self.db.commit()
+
+    def clear_all(self):
+        for t in ("topics", "names", "seen", "msg_map", "outbox"):
+            self.db.execute(f"DELETE FROM {t}")
         self.db.commit()
 
     def add_outbox(self, tg_msg_id: int, chat_id: int, ts: int):

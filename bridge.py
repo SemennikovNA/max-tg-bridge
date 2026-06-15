@@ -105,6 +105,12 @@ class Bridge:
         payload = resp["payload"]
         self.me_id = payload["profile"]["contact"]["id"]
         _logger.info("MAX logged in, me_id=%s", self.me_id)
+        # смена аккаунта -> чистим БД, чтобы подтянулись топики нового аккаунта
+        saved = self.store.get_meta("account_id")
+        if saved and saved != str(self.me_id):
+            _logger.info("account changed %s -> %s — clearing DB", saved, self.me_id)
+            self.store.clear_all()
+        self.store.set_meta("account_id", str(self.me_id))
         chats = payload.get("chats", [])
         self.chats_meta = {c["id"]: c for c in chats}
         await self.cleanup_ignored()

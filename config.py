@@ -50,3 +50,7 @@ IGNORED_CHAT_IDS = {
 
 HEARTBEAT_FILE = DATA_DIR / "heartbeat"
 HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL") or "30")
+# если из Max-WS не было ни одного фрейма дольше этого времени — считаем
+# соединение мёртвым и перестаём обновлять heartbeat (→ healthcheck → unhealthy).
+# keepalive ходит раз в 30с, так что 90с = запас в 2-3 пропуска.
+WS_LIVENESS_TIMEOUT = int(os.getenv("WS_LIVENESS_TIMEOUT") or "90")

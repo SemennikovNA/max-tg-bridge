@@ -30,6 +30,9 @@ class WebMaxClient(MaxClient):
         super().__init__()
         self._fixed_device_id = device_id or f"{uuid.uuid4()}"
         self._user_callback: Optional[PacketCallback] = None
+        # момент последнего успешного приёма из WS (любой фрейм = сокет жив).
+        # используется heartbeat'ом для честной проверки живости соединения.
+        self._last_rx: float = time.monotonic()
 
     async def invoke_method(self, *args, **kwargs):
         # переживаем окно reconnect: при разрыве ждём восстановления и повторяем
@@ -65,20 +68,46 @@ class WebMaxClient(MaxClient):
             },
         )
 
+    async def _send_keepalive_packet(self):
+        # vkmax-версия ловит только TimeoutError; ConnectionClosed при пинге
+        # по мёртвому сокету пробивал её насквозь и убивал _keepalive_loop
+        # (зомби без пинга и реконнекта). Ловим всё и зовём reconnect.
+        try:
+            async with asyncio.timeout(15):
+                await self.invoke_method(opcode=1, payload={"interactive": False})
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            _logger.warning("keepalive failed (%s); triggering reconnect", err)
+            if self._reconnect_callback:
+                asyncio.create_task(self._reconnect_callback())
+
     async def _recv_loop(self):
         while True:
             try:
-                packet = json.loads(await self._connection.recv())
+                raw = await self._connection.recv()
             except asyncio.CancelledError:
                 return
             except websockets.exceptions.ConnectionClosedError as err:
+                self._connection = None
                 if not self._is_logged_in:
                     raise err
                 if self._reconnect_callback:
                     asyncio.create_task(self._reconnect_callback())
                 return
             except websockets.exceptions.ConnectionClosedOK:
+                # сервер закрыл сокет «чисто» (1000/1001) — это НЕ повод молча
+                # умереть: иначе бридж остаётся зомби без приёма и реконнекта.
+                self._connection = None
+                if self._is_logged_in and self._reconnect_callback:
+                    asyncio.create_task(self._reconnect_callback())
                 return
+
+            # любой пришедший фрейм означает, что WS жив (включая ответы keepalive)
+            self._last_rx = time.monotonic()
+
+            try:
+                packet = json.loads(raw)
             except json.JSONDecodeError:
                 continue
 

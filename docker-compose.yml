@@ -6,6 +6,24 @@ services:
     env_file: .env
     environment:
       TZ: ${TZ:-Europe/Moscow}
+    # autoheal перезапускает контейнер, если он стал unhealthy.
+    # включается только там, где в .env задано AUTOHEAL_ENABLED=true.
+    labels:
+      autoheal: "${AUTOHEAL_ENABLED:-false}"
     volumes:
       - ${SESSION_HOST_DIR:-./session}:/app/session
       - ${DATA_HOST_DIR:-./data}:/app/data
+
+  # внешний watchdog: Docker сам unhealthy не перезапускает.
+  # стартует только с профилем autoheal (COMPOSE_PROFILES=autoheal в .env).
+  autoheal:
+    image: willfarrell/autoheal:latest
+    profiles: ["autoheal"]
+    restart: unless-stopped
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: 30
+      AUTOHEAL_START_PERIOD: 60
+      TZ: ${TZ:-Europe/Moscow}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

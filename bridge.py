@@ -28,6 +28,7 @@ class Bridge:
         self.group_id = config.TELEGRAM_GROUP_ID
         self.me_id = None
         self._reconnecting = False
+        self._ws_stale = False
         self._hb_task = None
         self.session = None
         self.chats_meta = {}
@@ -874,8 +875,21 @@ class Bridge:
     async def _heartbeat_loop(self):
         while True:
             try:
-                config.HEARTBEAT_FILE.write_text(str(int(time.time())))
-                self.store.set_meta("last_online_ms", str(int(time.time() * 1000)))
+                # heartbeat обновляем ТОЛЬКО если Max-WS реально живой.
+                # иначе файл стареет → healthcheck падает → unhealthy → autoheal.
+                alive = (self.max is not None and (
+                    time.monotonic() - self.max._last_rx
+                ) < config.WS_LIVENESS_TIMEOUT)
+                if alive:
+                    config.HEARTBEAT_FILE.write_text(str(int(time.time())))
+                    self.store.set_meta("last_online_ms", str(int(time.time() * 1000)))
+                    if self._ws_stale:
+                        _logger.info("MAX WS recovered; heartbeat resumed")
+                        self._ws_stale = False
+                elif not self._ws_stale:
+                    _logger.warning("MAX WS stale (no rx >%ss); heartbeat paused",
+                                    config.WS_LIVENESS_TIMEOUT)
+                    self._ws_stale = True
             except Exception:
                 pass
             await asyncio.sleep(config.HEARTBEAT_INTERVAL)

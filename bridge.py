@@ -890,8 +890,10 @@ class Bridge:
                     _logger.warning("MAX WS stale (no rx >%ss); heartbeat paused",
                                     config.WS_LIVENESS_TIMEOUT)
                     self._ws_stale = True
-            except Exception:
-                pass
+            except Exception as err:
+                # раньше тут был тихий pass — он скрывал причину ложного
+                # unhealthy (ошибка записи heartbeat-файла и т.п.). логируем.
+                _logger.warning("heartbeat iteration failed: %r", err)
             await asyncio.sleep(config.HEARTBEAT_INTERVAL)
 
     async def shutdown(self):
